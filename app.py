@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import shutil
 import subprocess
@@ -207,23 +208,55 @@ with st.sidebar:
             except Exception as error:
                 st.error(f"키를 삭제하지 못했습니다: {error}")
 
-    entered_api_key = st.text_input(
-        "새 OpenAI API 키" if saved_api_key else "OpenAI API 키",
-        value="",
-        type="password",
-        placeholder="저장된 키를 교체할 때만 입력" if saved_api_key else "sk-...",
-        help=(
-            "로컬 macOS에서는 키체인에 저장할 수 있습니다."
-            if keyring is not None
-            else "키는 현재 브라우저 세션에서만 사용되며 서버에 저장되지 않습니다."
-        ),
-    )
-    save_api_key = False
-    if keyring is not None:
-        save_api_key = st.checkbox("macOS 키체인에 저장", value=True)
+    owner_api_key = str(st.secrets.get("OWNER_OPENAI_API_KEY", "")).strip()
+    owner_access_code = str(st.secrets.get("OWNER_ACCESS_CODE", "")).strip()
+    key_mode = "직접 입력"
+    if owner_api_key and owner_access_code:
+        key_mode = st.radio(
+            "API 키 선택",
+            ["직접 입력", "내 저장 키 사용"],
+            horizontal=True,
+            help="내 저장 키는 관리자 접근 코드가 일치할 때만 사용할 수 있습니다.",
+        )
+
+    entered_api_key = ""
+    owner_code = ""
+    if key_mode == "내 저장 키 사용":
+        owner_code = st.text_input(
+            "관리자 접근 코드",
+            type="password",
+            help="Streamlit 서버에 저장된 본인 API 키를 불러오는 코드입니다.",
+        )
+        if owner_code:
+            if hmac.compare_digest(owner_code, owner_access_code):
+                st.success("내 저장 키를 사용합니다.")
+            else:
+                st.error("관리자 접근 코드가 올바르지 않습니다.")
     else:
+        entered_api_key = st.text_input(
+            "새 OpenAI API 키" if saved_api_key else "OpenAI API 키",
+            value="",
+            type="password",
+            placeholder="저장된 키를 교체할 때만 입력" if saved_api_key else "sk-...",
+            help=(
+                "로컬 macOS에서는 키체인에 저장할 수 있습니다."
+                if keyring is not None
+                else "키는 현재 브라우저 세션에서만 사용되며 서버에 저장되지 않습니다."
+            ),
+        )
+
+    save_api_key = False
+    if keyring is not None and key_mode == "직접 입력":
+        save_api_key = st.checkbox("macOS 키체인에 저장", value=True)
+    elif key_mode == "직접 입력":
         st.info("API 키는 저장되지 않으며 이 세션의 번역 요청에만 사용됩니다.")
-    api_key = entered_api_key.strip() or saved_api_key
+
+    owner_unlocked = (
+        key_mode == "내 저장 키 사용"
+        and bool(owner_code)
+        and hmac.compare_digest(owner_code, owner_access_code)
+    )
+    api_key = owner_api_key if owner_unlocked else (entered_api_key.strip() or saved_api_key)
     whisper_model = st.selectbox("Whisper 모델", ["small", "medium", "large-v3"], index=1)
     translation_model = st.text_input("번역 모델", value="gpt-4o-mini")
     burn_in = st.checkbox("한국어 자막이 입혀진 MP4도 만들기", value=True)
