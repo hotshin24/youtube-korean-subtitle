@@ -1,0 +1,5 @@
+streamlit==1.50.0
+yt-dlp[default]>=2026.3.13
+faster-whisper>=1.1,<2
+openai>=1.40,<3
+keyring>=25,<26; sys_platform == "darwin"

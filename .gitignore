@@ -1,0 +1,17 @@
+.venv*/
+__pycache__/
+.env
+.DS_Store
+*.srt
+*.mp4
+._*
+work/
+사용하지 않음/
+*.app/
+*.app
+*.webloc
+.runtime/
+run.command
+start-*.sh
+stop-background.sh
+.env.example
