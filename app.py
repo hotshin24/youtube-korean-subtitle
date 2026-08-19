@@ -298,6 +298,9 @@ with st.sidebar:
                     else:
                         st.error(f"접근 코드가 올바르지 않습니다. 남은 시도: {remaining}회")
 
+        # 인증 전에는 일반 설정과 작업 화면을 함께 노출하지 않는다.
+        st.stop()
+
     owner_unlocked = bool(
         admin_requested
         and st.session_state.owner_authenticated
