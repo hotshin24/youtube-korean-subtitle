@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -265,28 +266,54 @@ with st.sidebar:
 
     owner_api_key = str(st.secrets.get("OWNER_OPENAI_API_KEY", "")).strip()
     owner_access_code = str(st.secrets.get("OWNER_ACCESS_CODE", "")).strip()
-    key_mode = "직접 입력"
-    if owner_api_key and owner_access_code:
-        key_mode = st.radio(
-            "API 키 선택",
-            ["직접 입력", "내 저장 키 사용"],
-            horizontal=True,
-            help="내 저장 키는 관리자 접근 코드가 일치할 때만 사용할 수 있습니다.",
-        )
+    admin_requested = st.query_params.get("admin") == "1"
+    st.session_state.setdefault("owner_authenticated", False)
+    st.session_state.setdefault("owner_failed_attempts", 0)
+    st.session_state.setdefault("owner_locked_until", 0.0)
 
-    entered_api_key = ""
-    owner_code = ""
-    if key_mode == "내 저장 키 사용":
-        owner_code = st.text_input(
-            "관리자 접근 코드",
-            type="password",
-            help="Streamlit 서버에 저장된 본인 API 키를 불러오는 코드입니다.",
-        )
-        if owner_code:
-            if hmac.compare_digest(owner_code, owner_access_code):
-                st.success("내 저장 키를 사용합니다.")
-            else:
-                st.error("관리자 접근 코드가 올바르지 않습니다.")
+    if time.time() >= st.session_state.owner_locked_until:
+        st.session_state.owner_locked_until = 0.0
+        if st.session_state.owner_failed_attempts >= 5:
+            st.session_state.owner_failed_attempts = 0
+
+    if admin_requested and owner_api_key and owner_access_code and not st.session_state.owner_authenticated:
+        locked_seconds = max(0, int(st.session_state.owner_locked_until - time.time()))
+        if locked_seconds > 0:
+            st.error(f"로그인 시도가 잠겼습니다. {locked_seconds // 60 + 1}분 후 다시 시도해 주세요.")
+        else:
+            with st.form("owner_login_form"):
+                owner_code = st.text_input("관리자 접근 코드", type="password")
+                login_submitted = st.form_submit_button("관리자 로그인", use_container_width=True)
+            if login_submitted:
+                if hmac.compare_digest(owner_code, owner_access_code):
+                    st.session_state.owner_authenticated = True
+                    st.session_state.owner_failed_attempts = 0
+                    st.rerun()
+                else:
+                    st.session_state.owner_failed_attempts += 1
+                    remaining = 5 - st.session_state.owner_failed_attempts
+                    if remaining <= 0:
+                        st.session_state.owner_locked_until = time.time() + 900
+                        st.error("로그인 시도가 15분 동안 잠겼습니다.")
+                    else:
+                        st.error(f"접근 코드가 올바르지 않습니다. 남은 시도: {remaining}회")
+
+    owner_unlocked = bool(
+        admin_requested
+        and st.session_state.owner_authenticated
+        and owner_api_key
+        and owner_access_code
+    )
+
+    if owner_unlocked:
+        st.success("관리자 모드 · 저장된 API 키 사용 중")
+        if st.button("관리자 모드 종료", use_container_width=True):
+            st.session_state.owner_authenticated = False
+            st.query_params.clear()
+            st.rerun()
+        entered_api_key = ""
+        save_api_key = False
+        api_key = owner_api_key
     else:
         entered_api_key = st.text_input(
             "새 OpenAI API 키" if saved_api_key else "OpenAI API 키",
@@ -299,19 +326,13 @@ with st.sidebar:
                 else "키는 현재 브라우저 세션에서만 사용되며 서버에 저장되지 않습니다."
             ),
         )
+        save_api_key = False
+        if keyring is not None:
+            save_api_key = st.checkbox("macOS 키체인에 저장", value=True)
+        else:
+            st.info("API 키는 저장되지 않으며 이 세션의 번역 요청에만 사용됩니다.")
+        api_key = entered_api_key.strip() or saved_api_key
 
-    save_api_key = False
-    if keyring is not None and key_mode == "직접 입력":
-        save_api_key = st.checkbox("macOS 키체인에 저장", value=True)
-    elif key_mode == "직접 입력":
-        st.info("API 키는 저장되지 않으며 이 세션의 번역 요청에만 사용됩니다.")
-
-    owner_unlocked = (
-        key_mode == "내 저장 키 사용"
-        and bool(owner_code)
-        and hmac.compare_digest(owner_code, owner_access_code)
-    )
-    api_key = owner_api_key if owner_unlocked else (entered_api_key.strip() or saved_api_key)
     whisper_model = st.selectbox("Whisper 모델", ["small", "medium", "large-v3"], index=1)
     translation_model = st.text_input("번역 모델", value="gpt-4o-mini")
     burn_in = st.checkbox("한국어 자막이 입혀진 MP4도 만들기", value=True)
