@@ -95,19 +95,32 @@ def save_upload(uploaded_file, output_dir: Path) -> tuple[Path, str]:
 
 @st.cache_resource(show_spinner=False)
 def load_whisper(model_name: str) -> WhisperModel:
-    return WhisperModel(model_name, device="auto", compute_type="int8")
+    return WhisperModel(
+        model_name,
+        device="cpu",
+        compute_type="int8",
+        cpu_threads=4,
+        num_workers=1,
+    )
 
 
-def transcribe(media_path: Path, model_name: str) -> tuple[list[dict], str]:
+def transcribe(media_path: Path, model_name: str, progress_callback=None) -> tuple[list[dict], str]:
     model = load_whisper(model_name)
     raw_segments, info = model.transcribe(
-        str(media_path), beam_size=5, vad_filter=True, condition_on_previous_text=True
+        str(media_path),
+        beam_size=1,
+        vad_filter=True,
+        condition_on_previous_text=True,
     )
-    segments = [
-        {"start": item.start, "end": item.end, "source": item.text.strip()}
-        for item in raw_segments
-        if item.text.strip()
-    ]
+    segments = []
+    total_duration = max(float(info.duration or 0), 1.0)
+    for item in raw_segments:
+        if item.text.strip():
+            segments.append(
+                {"start": item.start, "end": item.end, "source": item.text.strip()}
+            )
+        if progress_callback is not None:
+            progress_callback(min(float(item.end) / total_duration, 1.0))
     return segments, info.language
 
 
@@ -347,7 +360,7 @@ with st.sidebar:
             st.info("API 키는 저장되지 않으며 이 세션의 번역 요청에만 사용됩니다.")
         api_key = entered_api_key.strip() or saved_api_key
 
-    whisper_model = st.selectbox("Whisper 모델", ["small", "medium", "large-v3"], index=1)
+    whisper_model = st.selectbox("Whisper 모델", ["small", "medium", "large-v3"], index=0)
     translation_model = st.text_input("번역 모델", value="gpt-4o-mini")
     burn_in = st.checkbox("한국어 자막이 입혀진 MP4도 만들기", value=True)
 
@@ -418,8 +431,17 @@ if st.button("한국어 자막 만들기", type="primary", use_container_width=T
                     media_path, title = save_upload(uploaded, temp_dir)
                     original_video = media_path
 
-                status.write("음성을 인식하고 있습니다…")
-                segments, language = transcribe(media_path, whisper_model)
+                status.write("음성을 인식하고 있습니다. 영상 길이에 따라 몇 분 걸릴 수 있습니다…")
+                transcription_progress = st.progress(0, text="음성 인식 0%")
+                segments, language = transcribe(
+                    media_path,
+                    whisper_model,
+                    lambda ratio: transcription_progress.progress(
+                        int(ratio * 100),
+                        text=f"음성 인식 {int(ratio * 100)}%",
+                    ),
+                )
+                transcription_progress.empty()
                 if not segments:
                     raise RuntimeError("영상에서 음성을 인식하지 못했습니다.")
 
