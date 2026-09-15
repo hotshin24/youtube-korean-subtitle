@@ -100,6 +100,33 @@ def save_upload(uploaded_file, output_dir: Path) -> tuple[Path, str]:
     return path, Path(uploaded_file.name).stem
 
 
+def extract_speech_audio(source: Path, output_path: Path) -> None:
+    """Whisper가 안정적으로 읽도록 첫 오디오 트랙을 16kHz mono WAV로 정규화한다."""
+    command = [
+        FFMPEG_SUBTITLE_BIN,
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-af",
+        "aresample=async=1:first_pts=0,loudnorm=I=-16:TP=-1.5:LRA=11",
+        str(output_path),
+    ]
+    process = subprocess.run(command, capture_output=True, text=True)
+    if process.returncode != 0 or not output_path.is_file() or output_path.stat().st_size < 1000:
+        details = process.stderr.strip().splitlines()
+        message = "\n".join(details[-10:]) if details else "오디오 트랙을 찾지 못했습니다."
+        raise RuntimeError(
+            "다운로드한 영상에서 음성 트랙을 추출하지 못했습니다.\n" + message
+        )
+
+
 @st.cache_resource(show_spinner=False)
 def load_whisper(model_name: str) -> WhisperModel:
     return WhisperModel(
@@ -548,10 +575,14 @@ if st.button("1단계: 음성 인식 시작", type="primary", use_container_widt
                 else:
                     media_path, title = save_upload(uploaded, temp_dir)
 
+                status.write("음성 트랙을 추출하고 음량과 시간축을 정리하고 있습니다…")
+                speech_path = temp_dir / "speech.wav"
+                extract_speech_audio(media_path, speech_path)
+
                 status.write("음성을 인식하고 있습니다. 영상 길이에 따라 몇 분 걸릴 수 있습니다…")
                 transcription_progress = st.progress(0, text="음성 인식 0%")
                 segments, language = transcribe(
-                    media_path,
+                    speech_path,
                     whisper_model,
                     whisper_beam_size,
                     lambda ratio: transcription_progress.progress(
