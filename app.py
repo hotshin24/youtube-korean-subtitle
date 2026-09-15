@@ -59,7 +59,10 @@ def make_srt(segments: list[dict], field: str) -> str:
 
 
 def download_youtube_video(
-    url: str, output_dir: Path, cookie_browser: str | None = None
+    url: str,
+    output_dir: Path,
+    cookie_browser: str | None = None,
+    progress_callback=None,
 ) -> tuple[Path, str]:
     options = {
         # mweb에서 실제 다운로드 가능한 호환 MP4(일반적으로 360p)를 선택한다.
@@ -67,11 +70,16 @@ def download_youtube_video(
         # 확장자가 MP4여도 영상 전용 스트림일 수 있으므로 오디오 코덱을
         # 반드시 포함한 단일 파일만 고른다. 없으면 음성 전용 파일로 폴백한다.
         "format": (
-            "best[ext=mp4][acodec!=none]/"
+            "best[height<=360][acodec!=none]/"
+            "best[height<=480][acodec!=none]/"
             "best[acodec!=none]/"
             "bestaudio[ext=m4a]/bestaudio"
         ),
         "outtmpl": str(output_dir / "source.%(ext)s"),
+        "concurrent_fragment_downloads": 4,
+        "retries": 5,
+        "fragment_retries": 5,
+        "noprogress": True,
         "noplaylist": True,
         "js_runtimes": {"node": {}},
         # mweb HTTPS 스트림은 현재 GVS PO Token이 필요해 빈 오디오 또는
@@ -80,6 +88,27 @@ def download_youtube_video(
         "extractor_args": {"youtube": {"player_client": ["web_safari"]}},
         "quiet": True,
     }
+    if progress_callback is not None:
+        def report_download(data):
+            if data.get("status") != "downloading":
+                return
+            total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            downloaded = data.get("downloaded_bytes") or 0
+            fragment_count = data.get("fragment_count") or 0
+            fragment_index = data.get("fragment_index") or 0
+            ratio = (
+                downloaded / total
+                if total
+                else fragment_index / fragment_count
+                if fragment_count
+                else 0.0
+            )
+            progress_callback(
+                max(0.0, min(float(ratio), 0.99)),
+                data.get("eta"),
+            )
+        options["progress_hooks"] = [report_download]
+
     # 로컬 Mac에서만 로그인된 브라우저 쿠키를 직접 읽는다.
     # 쿠키 파일을 만들거나 외부 서버로 전송하지 않는다.
     if cookie_browser:
@@ -569,9 +598,22 @@ if st.button("1단계: 음성 인식 시작", type="primary", use_container_widt
                         status.write(
                             f"{cookie_browser_label}의 YouTube 로그인 정보를 확인하고 있습니다…"
                         )
+                    status.write("YouTube 영상을 내려받고 있습니다…")
+                    download_progress = st.progress(0, text="영상 다운로드 준비 중…")
                     media_path, title = download_youtube_video(
-                        url.strip(), temp_dir, cookie_browser
+                        url.strip(),
+                        temp_dir,
+                        cookie_browser,
+                        lambda ratio, eta: download_progress.progress(
+                            int(ratio * 100),
+                            text=(
+                                f"영상 다운로드 {int(ratio * 100)}%"
+                                + (f" · 약 {int(eta) // 60}분 {int(eta) % 60}초 남음" if eta else "")
+                            ),
+                        ),
                     )
+                    download_progress.progress(100, text="영상 다운로드 완료")
+                    download_progress.empty()
                 else:
                     media_path, title = save_upload(uploaded, temp_dir)
 
