@@ -600,8 +600,8 @@ if job:
                     f"{len(corrected_segments)}개 자막을 {job['translation_model']} 모델로 번역하고 있습니다…"
                 )
                 for item in corrected_segments:
-                if item["end"] <= item["start"]:
-                    raise ValueError("자막 종료 시간은 시작 시간보다 늦어야 합니다.")
+                    if item["end"] <= item["start"]:
+                        raise ValueError("자막 종료 시간은 시작 시간보다 늦어야 합니다.")
 
                 translated = translate_segments(
                     corrected_segments, api_key, job["translation_model"]
