@@ -63,7 +63,13 @@ def download_youtube_video(
     options = {
         # mweb에서 실제 다운로드 가능한 호환 MP4(일반적으로 360p)를 선택한다.
         # 자막 생성이 목적이므로 고해상도보다 안정성과 처리 속도를 우선한다.
-        "format": "best[ext=mp4]/best",
+        # 확장자가 MP4여도 영상 전용 스트림일 수 있으므로 오디오 코덱을
+        # 반드시 포함한 단일 파일만 고른다. 없으면 음성 전용 파일로 폴백한다.
+        "format": (
+            "best[ext=mp4][acodec!=none]/"
+            "best[acodec!=none]/"
+            "bestaudio[ext=m4a]/bestaudio"
+        ),
         "outtmpl": str(output_dir / "source.%(ext)s"),
         "noplaylist": True,
         "js_runtimes": {"node": {}},
