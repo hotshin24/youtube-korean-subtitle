@@ -170,6 +170,32 @@ def transcribe(
                     cue_words = []
         if progress_callback is not None:
             progress_callback(min(float(item.end) / total_duration, 1.0))
+
+    # 배경음, 작은 목소리, 긴 무음 때문에 VAD가 음성을 전부 제거하는 영상은
+    # 무음 제거를 끈 안전 모드로 자동 재시도한다.
+    if not segments:
+        retry_segments, retry_info = model.transcribe(
+            str(media_path),
+            beam_size=max(1, beam_size),
+            vad_filter=False,
+            condition_on_previous_text=False,
+            word_timestamps=False,
+        )
+        for item in retry_segments:
+            source = item.text.strip()
+            if source:
+                segments.append(
+                    {
+                        "start": float(item.start),
+                        "end": max(float(item.end), float(item.start) + 0.35),
+                        "source": source,
+                    }
+                )
+            if progress_callback is not None:
+                progress_callback(min(float(item.end) / total_duration, 1.0))
+        if segments:
+            info = retry_info
+
     return segments, info.language
 
 
