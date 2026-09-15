@@ -120,14 +120,54 @@ def transcribe(
     )
     segments = []
     total_duration = max(float(info.duration or 0), 1.0)
+    sentence_endings = (".", "!", "?", "。", "！", "？")
     for item in raw_segments:
-        words = [word for word in (item.words or []) if word.word.strip()]
-        source = "".join(word.word for word in words).strip() or item.text.strip()
-        if source:
-            # 문장 덩어리의 대략적인 경계 대신 실제 첫/마지막 단어 시각을 사용한다.
-            start = float(words[0].start) if words and words[0].start is not None else float(item.start)
-            end = float(words[-1].end) if words and words[-1].end is not None else float(item.end)
-            segments.append({"start": start, "end": end, "source": source})
+        words = [
+            word
+            for word in (item.words or [])
+            if word.word.strip() and word.start is not None and word.end is not None
+        ]
+        if not words:
+            source = item.text.strip()
+            if source:
+                segments.append(
+                    {"start": float(item.start), "end": float(item.end), "source": source}
+                )
+        else:
+            # Whisper의 긴 문장 단위 대신 단어 시각·침묵·문장 부호를 기준으로
+            # 화면에 읽기 좋은 짧은 자막 단위로 다시 묶는다.
+            cue_words = []
+            for index, word in enumerate(words):
+                cue_words.append(word)
+                cue_start = float(cue_words[0].start)
+                cue_end = float(word.end)
+                next_pause = 0.0
+                if index + 1 < len(words):
+                    next_pause = max(0.0, float(words[index + 1].start) - cue_end)
+
+                text = "".join(part.word for part in cue_words).strip()
+                duration = cue_end - cue_start
+                should_split = (
+                    next_pause >= 0.55
+                    or duration >= 4.5
+                    or len(cue_words) >= 14
+                    or (
+                        text.endswith(sentence_endings)
+                        and duration >= 1.2
+                        and len(cue_words) >= 4
+                    )
+                )
+                if should_split or index == len(words) - 1:
+                    # 말이 끝나기 전에 자막이 사라져 보이지 않도록 아주 짧은 여유만 준다.
+                    padded_end = min(cue_end + 0.12, float(words[index + 1].start)) if index + 1 < len(words) else cue_end + 0.12
+                    segments.append(
+                        {
+                            "start": max(0.0, cue_start - 0.04),
+                            "end": max(cue_start + 0.35, padded_end),
+                            "source": text,
+                        }
+                    )
+                    cue_words = []
         if progress_callback is not None:
             progress_callback(min(float(item.end) / total_duration, 1.0))
     return segments, info.language
@@ -511,10 +551,14 @@ if job:
         editor_rows,
         hide_index=True,
         use_container_width=True,
-        disabled=("시작(초)", "끝(초)"),
         column_config={
-            "시작(초)": st.column_config.NumberColumn(format="%.2f"),
-            "끝(초)": st.column_config.NumberColumn(format="%.2f"),
+            "시작(초)": st.column_config.NumberColumn(
+                format="%.2f", min_value=0.0, step=0.1,
+                help="자막이 늦으면 값을 줄이고, 빠르면 값을 늘리세요.",
+            ),
+            "끝(초)": st.column_config.NumberColumn(
+                format="%.2f", min_value=0.0, step=0.1,
+            ),
             "인식 원문": st.column_config.TextColumn(width="large"),
         },
         key="transcript_editor",
@@ -544,17 +588,21 @@ if job:
         try:
             corrected_segments = [
                 {
-                    "start": float(original["start"]),
-                    "end": float(original["end"]),
+                    "start": float(edited["시작(초)"]),
+                    "end": float(edited["끝(초)"]),
                     "source": str(edited["인식 원문"]).strip(),
                 }
-                for original, edited in zip(job["segments"], edited_rows)
+                for edited in edited_rows
                 if str(edited["인식 원문"]).strip()
             ]
             with st.status("한국어로 번역 중…", expanded=True) as status:
                 status.write(
                     f"{len(corrected_segments)}개 자막을 {job['translation_model']} 모델로 번역하고 있습니다…"
                 )
+                for item in corrected_segments:
+                if item["end"] <= item["start"]:
+                    raise ValueError("자막 종료 시간은 시작 시간보다 늦어야 합니다.")
+
                 translated = translate_segments(
                     corrected_segments, api_key, job["translation_model"]
                 )
