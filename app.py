@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import streamlit as st
 import yt_dlp
@@ -495,7 +496,11 @@ source_type = st.radio("영상 입력 방식", ["유튜브 URL", "영상 파일 
 url = ""
 uploaded = None
 if source_type == "유튜브 URL":
-    url = st.text_input("유튜브 URL", placeholder="https://www.youtube.com/watch?v=...")
+    url = st.text_input(
+        "유튜브 URL",
+        placeholder="https://www.youtube.com/watch?v=...",
+        key="youtube_url_input",
+    )
 else:
     uploaded = st.file_uploader("영상 또는 오디오", type=["mp4", "mov", "mkv", "webm", "mp3", "m4a", "wav"])
 
@@ -503,9 +508,20 @@ st.session_state.setdefault("transcription_job", None)
 st.session_state.setdefault("translation_result", None)
 
 if st.button("1단계: 음성 인식 시작", type="primary", use_container_width=True):
-    if source_type == "유튜브 URL" and not url.strip():
-        st.error("유튜브 URL을 입력해 주세요.")
-        st.stop()
+    if source_type == "유튜브 URL":
+        candidate_url = url.strip()
+        if not candidate_url:
+            st.error("유튜브 URL을 입력해 주세요.")
+            st.stop()
+        parsed_url = urlparse(candidate_url)
+        hostname = (parsed_url.hostname or "").lower()
+        if parsed_url.scheme not in {"http", "https"} or not (
+            hostname == "youtu.be"
+            or hostname == "youtube.com"
+            or hostname.endswith(".youtube.com")
+        ):
+            st.error("URL 입력칸에 올바른 YouTube 영상 주소를 다시 붙여 넣어 주세요.")
+            st.stop()
     if source_type == "영상 파일 업로드" and uploaded is None:
         st.error("영상 또는 오디오 파일을 선택해 주세요.")
         st.stop()
