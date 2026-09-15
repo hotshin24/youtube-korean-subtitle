@@ -104,21 +104,30 @@ def load_whisper(model_name: str) -> WhisperModel:
     )
 
 
-def transcribe(media_path: Path, model_name: str, progress_callback=None) -> tuple[list[dict], str]:
+def transcribe(
+    media_path: Path,
+    model_name: str,
+    beam_size: int,
+    progress_callback=None,
+) -> tuple[list[dict], str]:
     model = load_whisper(model_name)
     raw_segments, info = model.transcribe(
         str(media_path),
-        beam_size=1,
+        beam_size=beam_size,
         vad_filter=True,
         condition_on_previous_text=True,
+        word_timestamps=True,
     )
     segments = []
     total_duration = max(float(info.duration or 0), 1.0)
     for item in raw_segments:
-        if item.text.strip():
-            segments.append(
-                {"start": item.start, "end": item.end, "source": item.text.strip()}
-            )
+        words = [word for word in (item.words or []) if word.word.strip()]
+        source = "".join(word.word for word in words).strip() or item.text.strip()
+        if source:
+            # 문장 덩어리의 대략적인 경계 대신 실제 첫/마지막 단어 시각을 사용한다.
+            start = float(words[0].start) if words and words[0].start is not None else float(item.start)
+            end = float(words[-1].end) if words and words[-1].end is not None else float(item.end)
+            segments.append({"start": start, "end": end, "source": source})
         if progress_callback is not None:
             progress_callback(min(float(item.end) / total_duration, 1.0))
     return segments, info.language
@@ -360,8 +369,33 @@ with st.sidebar:
             st.info("API 키는 저장되지 않으며 이 세션의 번역 요청에만 사용됩니다.")
         api_key = entered_api_key.strip() or saved_api_key
 
-    whisper_model = st.selectbox("Whisper 모델", ["small", "medium", "large-v3"], index=0)
-    translation_model = st.text_input("번역 모델", value="gpt-4o-mini")
+    quality_profiles = {
+        "빠른 모드": {
+            "model": "small",
+            "beam_size": 1,
+            "help": "가장 빠릅니다. 짧고 선명한 음성에 적합합니다.",
+        },
+        "권장 모드": {
+            "model": "medium",
+            "beam_size": 2,
+            "help": "속도와 음성 인식 정확도의 균형이 좋습니다.",
+        },
+        "최고 품질": {
+            "model": "large-v3",
+            "beam_size": 2,
+            "help": "억양·잡음·전문용어에 더 강하지만 가장 오래 걸립니다.",
+        },
+    }
+    quality_mode = st.selectbox("처리 품질", list(quality_profiles), index=1)
+    quality_profile = quality_profiles[quality_mode]
+    st.caption(quality_profile["help"])
+    whisper_model = quality_profile["model"]
+    whisper_beam_size = quality_profile["beam_size"]
+    translation_model = st.text_input(
+        "번역 모델",
+        value="gpt-4.1",
+        help="품질 우선 기본값입니다. 비용을 줄이려면 gpt-4o-mini로 바꿀 수 있습니다.",
+    )
     burn_in = st.checkbox("한국어 자막이 입혀진 MP4도 만들기", value=True)
 
     cookie_browser = None
@@ -393,18 +427,15 @@ if source_type == "유튜브 URL":
 else:
     uploaded = st.file_uploader("영상 또는 오디오", type=["mp4", "mov", "mkv", "webm", "mp3", "m4a", "wav"])
 
-if st.button("한국어 자막 만들기", type="primary", use_container_width=True):
-    if not api_key:
-        st.error("OpenAI API 키를 입력해 주세요.")
-        st.stop()
+st.session_state.setdefault("transcription_job", None)
+st.session_state.setdefault("translation_result", None)
+
+if st.button("1단계: 음성 인식 시작", type="primary", use_container_width=True):
     if source_type == "유튜브 URL" and not url.strip():
         st.error("유튜브 URL을 입력해 주세요.")
         st.stop()
     if source_type == "영상 파일 업로드" and uploaded is None:
         st.error("영상 또는 오디오 파일을 선택해 주세요.")
-        st.stop()
-    if not Path(FFMPEG_SUBTITLE_BIN).is_file() and shutil.which(FFMPEG_SUBTITLE_BIN) is None:
-        st.error("자막 필터가 포함된 FFmpeg가 필요합니다.")
         st.stop()
 
     if keyring is not None and entered_api_key.strip() and save_api_key:
@@ -426,16 +457,15 @@ if st.button("한국어 자막 만들기", type="primary", use_container_width=T
                     media_path, title = download_youtube_video(
                         url.strip(), temp_dir, cookie_browser
                     )
-                    original_video = media_path
                 else:
                     media_path, title = save_upload(uploaded, temp_dir)
-                    original_video = media_path
 
                 status.write("음성을 인식하고 있습니다. 영상 길이에 따라 몇 분 걸릴 수 있습니다…")
                 transcription_progress = st.progress(0, text="음성 인식 0%")
                 segments, language = transcribe(
                     media_path,
                     whisper_model,
+                    whisper_beam_size,
                     lambda ratio: transcription_progress.progress(
                         int(ratio * 100),
                         text=f"음성 인식 {int(ratio * 100)}%",
@@ -445,33 +475,132 @@ if st.button("한국어 자막 만들기", type="primary", use_container_width=T
                 if not segments:
                     raise RuntimeError("영상에서 음성을 인식하지 못했습니다.")
 
-                status.write(f"감지 언어: {language} · {len(segments)}개 자막 번역 중…")
-                translated = translate_segments(segments, api_key, translation_model)
-                srt_text = make_srt(translated, "ko")
-                status.update(label="자막 생성 완료", state="complete", expanded=False)
-
-            safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()[:80] or "subtitle"
-            st.success(f"{len(translated)}개 자막을 만들었습니다.")
-            st.download_button(
-                "한국어 SRT 다운로드",
-                data=srt_text.encode("utf-8-sig"),
-                file_name=f"{safe_title}.ko.srt",
-                mime="application/x-subrip",
-                use_container_width=True,
-            )
-
-            if burn_in and original_video is not None:
-                srt_path = temp_dir / "subtitle.srt"
-                output_path = temp_dir / "subtitled.mp4"
-                srt_path.write_text(srt_text, encoding="utf-8")
-                with st.spinner("영상에 자막을 입히는 중…"):
-                    burn_subtitles(original_video, srt_path, output_path)
-                st.download_button(
-                    "자막 포함 MP4 다운로드",
-                    data=output_path.read_bytes(),
-                    file_name=f"{safe_title}.ko.mp4",
-                    mime="video/mp4",
-                    use_container_width=True,
-                )
+                st.session_state.transcription_job = {
+                    "media": media_path.read_bytes(),
+                    "suffix": media_path.suffix or ".mp4",
+                    "title": title,
+                    "segments": segments,
+                    "language": language,
+                    "burn_in": burn_in,
+                    "translation_model": translation_model,
+                    "quality_mode": quality_mode,
+                }
+                st.session_state.translation_result = None
+                status.update(label="음성 인식 완료", state="complete", expanded=False)
+        st.rerun()
     except Exception as error:
-        st.error(f"처리 중 오류가 발생했습니다: {error}")
+        st.error(f"음성 인식 중 오류가 발생했습니다: {error}")
+
+job = st.session_state.transcription_job
+if job:
+    st.divider()
+    st.subheader("2단계: 인식 원문 확인")
+    st.caption(
+        f"감지 언어: {job['language']} · {job['quality_mode']} · "
+        f"{len(job['segments'])}개 자막 — 잘못 들은 부분을 표에서 직접 고쳐 주세요."
+    )
+    editor_rows = [
+        {
+            "시작(초)": round(item["start"], 2),
+            "끝(초)": round(item["end"], 2),
+            "인식 원문": item["source"],
+        }
+        for item in job["segments"]
+    ]
+    edited_rows = st.data_editor(
+        editor_rows,
+        hide_index=True,
+        use_container_width=True,
+        disabled=("시작(초)", "끝(초)"),
+        column_config={
+            "시작(초)": st.column_config.NumberColumn(format="%.2f"),
+            "끝(초)": st.column_config.NumberColumn(format="%.2f"),
+            "인식 원문": st.column_config.TextColumn(width="large"),
+        },
+        key="transcript_editor",
+    )
+
+    translate_col, reset_col = st.columns([3, 1])
+    with translate_col:
+        translate_clicked = st.button(
+            "확인한 원문으로 한국어 번역",
+            type="primary",
+            use_container_width=True,
+        )
+    with reset_col:
+        if st.button("처음부터", use_container_width=True):
+            st.session_state.transcription_job = None
+            st.session_state.translation_result = None
+            st.rerun()
+
+    if translate_clicked:
+        if not api_key:
+            st.error("OpenAI API 키를 입력해 주세요.")
+            st.stop()
+        if job["burn_in"] and not Path(FFMPEG_SUBTITLE_BIN).is_file() and shutil.which(FFMPEG_SUBTITLE_BIN) is None:
+            st.error("자막 필터가 포함된 FFmpeg가 필요합니다.")
+            st.stop()
+
+        try:
+            corrected_segments = [
+                {
+                    "start": float(original["start"]),
+                    "end": float(original["end"]),
+                    "source": str(edited["인식 원문"]).strip(),
+                }
+                for original, edited in zip(job["segments"], edited_rows)
+                if str(edited["인식 원문"]).strip()
+            ]
+            with st.status("한국어로 번역 중…", expanded=True) as status:
+                status.write(
+                    f"{len(corrected_segments)}개 자막을 {job['translation_model']} 모델로 번역하고 있습니다…"
+                )
+                translated = translate_segments(
+                    corrected_segments, api_key, job["translation_model"]
+                )
+                srt_text = make_srt(translated, "ko")
+                safe_title = "".join(
+                    c for c in job["title"] if c.isalnum() or c in " -_"
+                ).strip()[:80] or "subtitle"
+
+                mp4_bytes = None
+                if job["burn_in"]:
+                    status.write("영상에 한국어 자막을 입히고 있습니다…")
+                    with tempfile.TemporaryDirectory(prefix="ko-subtitle-render-") as temp_name:
+                        temp_dir = Path(temp_name)
+                        source_path = temp_dir / f"source{job['suffix']}"
+                        srt_path = temp_dir / "subtitle.srt"
+                        output_path = temp_dir / "subtitled.mp4"
+                        source_path.write_bytes(job["media"])
+                        srt_path.write_text(srt_text, encoding="utf-8")
+                        burn_subtitles(source_path, srt_path, output_path)
+                        mp4_bytes = output_path.read_bytes()
+
+                st.session_state.translation_result = {
+                    "count": len(translated),
+                    "srt": srt_text.encode("utf-8-sig"),
+                    "mp4": mp4_bytes,
+                    "safe_title": safe_title,
+                }
+                status.update(label="자막 생성 완료", state="complete", expanded=False)
+        except Exception as error:
+            st.error(f"번역 또는 영상 생성 중 오류가 발생했습니다: {error}")
+
+result = st.session_state.translation_result
+if result:
+    st.success(f"{result['count']}개 자막을 만들었습니다.")
+    st.download_button(
+        "한국어 SRT 다운로드",
+        data=result["srt"],
+        file_name=f"{result['safe_title']}.ko.srt",
+        mime="application/x-subrip",
+        use_container_width=True,
+    )
+    if result["mp4"] is not None:
+        st.download_button(
+            "자막 포함 MP4 다운로드",
+            data=result["mp4"],
+            file_name=f"{result['safe_title']}.ko.mp4",
+            mime="video/mp4",
+            use_container_width=True,
+        )
