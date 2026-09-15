@@ -57,7 +57,9 @@ def make_srt(segments: list[dict], field: str) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
-def download_youtube_video(url: str, output_dir: Path) -> tuple[Path, str]:
+def download_youtube_video(
+    url: str, output_dir: Path, cookie_browser: str | None = None
+) -> tuple[Path, str]:
     options = {
         # mweb에서 실제 다운로드 가능한 호환 MP4(일반적으로 360p)를 선택한다.
         # 자막 생성이 목적이므로 고해상도보다 안정성과 처리 속도를 우선한다.
@@ -71,6 +73,10 @@ def download_youtube_video(url: str, output_dir: Path) -> tuple[Path, str]:
         "extractor_args": {"youtube": {"player_client": ["mweb"]}},
         "quiet": True,
     }
+    # 로컬 Mac에서만 로그인된 브라우저 쿠키를 직접 읽는다.
+    # 쿠키 파일을 만들거나 외부 서버로 전송하지 않는다.
+    if cookie_browser:
+        options["cookiesfrombrowser"] = (cookie_browser,)
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)
     candidates = [path for path in output_dir.glob("source.*") if path.suffix not in {".part", ".ytdl"}]
@@ -340,6 +346,27 @@ with st.sidebar:
     translation_model = st.text_input("번역 모델", value="gpt-4o-mini")
     burn_in = st.checkbox("한국어 자막이 입혀진 MP4도 만들기", value=True)
 
+    cookie_browser = None
+    cookie_browser_label = "로그인 쿠키 사용 안 함"
+    if sys.platform == "darwin":
+        browser_labels = {
+            "Chrome (추천)": "chrome",
+            "Safari": "safari",
+            "Firefox": "firefox",
+            "Brave": "brave",
+            "Microsoft Edge": "edge",
+            "로그인 쿠키 사용 안 함": None,
+        }
+        cookie_browser_label = st.selectbox(
+            "YouTube 로그인 브라우저",
+            list(browser_labels),
+            help=(
+                "선택한 브라우저에서 YouTube에 로그인해 두세요. "
+                "쿠키는 이 Mac 안에서만 읽으며 서버에 업로드하지 않습니다."
+            ),
+        )
+        cookie_browser = browser_labels[cookie_browser_label]
+
 source_type = st.radio("영상 입력 방식", ["유튜브 URL", "영상 파일 업로드"], horizontal=True)
 url = ""
 uploaded = None
@@ -374,7 +401,13 @@ if st.button("한국어 자막 만들기", type="primary", use_container_width=T
             temp_dir = Path(temp_name)
             with st.status("영상 준비 중…", expanded=True) as status:
                 if source_type == "유튜브 URL":
-                    media_path, title = download_youtube_video(url.strip(), temp_dir)
+                    if cookie_browser:
+                        status.write(
+                            f"{cookie_browser_label}의 YouTube 로그인 정보를 확인하고 있습니다…"
+                        )
+                    media_path, title = download_youtube_video(
+                        url.strip(), temp_dir, cookie_browser
+                    )
                     original_video = media_path
                 else:
                     media_path, title = save_upload(uploaded, temp_dir)
