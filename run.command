@@ -3,8 +3,7 @@ set -euo pipefail
 
 cd "${0:A:h}"
 
-USER_HOME="${HOME:?사용자 홈 폴더를 찾을 수 없습니다}"
-SUPPORT_DIR="$USER_HOME/Library/Application Support/YouTubeKoreanSubtitle"
+SUPPORT_DIR="$PWD/.runtime-local"
 APP_VENV="$SUPPORT_DIR/venv"
 RUNTIME_DIR="$SUPPORT_DIR/runtime"
 PID_FILE="$RUNTIME_DIR/server.pid"
