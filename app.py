@@ -74,10 +74,10 @@ def download_youtube_video(
         "outtmpl": str(output_dir / "source.%(ext)s"),
         "noplaylist": True,
         "js_runtimes": {"node": {}},
-        # mweb은 현재 토큰 없는 고음질 스트림을 건너뛰고 실제로 재생 가능한
-        # 호환 포맷으로 자동 폴백한다. 기본 android_vr 오디오는 일부 IP에서
-        # 목록에는 보이지만 다운로드 시 403을 반환할 수 있다.
-        "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+        # mweb HTTPS 스트림은 현재 GVS PO Token이 필요해 빈 오디오 또는
+        # 403을 만들 수 있다. web_safari의 HLS 스트림은 토큰 없이 재생 가능한
+        # 경로이므로 실제 오디오 패킷이 포함된 파일을 받는 데 사용한다.
+        "extractor_args": {"youtube": {"player_client": ["web_safari"]}},
         "quiet": True,
     }
     # 로컬 Mac에서만 로그인된 브라우저 쿠키를 직접 읽는다.
