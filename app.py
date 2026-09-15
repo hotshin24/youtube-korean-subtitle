@@ -270,8 +270,13 @@ with st.sidebar:
             except Exception as error:
                 st.error(f"키를 삭제하지 못했습니다: {error}")
 
-    owner_api_key = str(st.secrets.get("OWNER_OPENAI_API_KEY", "")).strip()
-    owner_access_code = str(st.secrets.get("OWNER_ACCESS_CODE", "")).strip()
+    try:
+        owner_api_key = str(st.secrets.get("OWNER_OPENAI_API_KEY", "")).strip()
+        owner_access_code = str(st.secrets.get("OWNER_ACCESS_CODE", "")).strip()
+    except Exception:
+        # 로컬 앱에는 .streamlit/secrets.toml이 없어도 정상 실행되어야 한다.
+        owner_api_key = ""
+        owner_access_code = ""
     admin_requested = st.query_params.get("admin") == "1"
     st.session_state.setdefault("owner_authenticated", False)
     st.session_state.setdefault("owner_failed_attempts", 0)
