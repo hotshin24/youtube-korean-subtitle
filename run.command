@@ -9,7 +9,8 @@ RUNTIME_DIR="$SUPPORT_DIR/runtime"
 PID_FILE="$RUNTIME_DIR/server.pid"
 LOG_FILE="$RUNTIME_DIR/server.log"
 PYTHON_BIN="/opt/homebrew/bin/python3.12"
-APP_URL="http://localhost:8501"
+APP_PORT="8510"
+APP_URL="http://127.0.0.1:$APP_PORT"
 
 function pause_on_error() {
   local exit_code=$?
@@ -24,9 +25,14 @@ trap pause_on_error EXIT
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-if /usr/bin/curl --silent --fail --max-time 1 "$APP_URL/_stcore/health" >/dev/null 2>&1; then
-  /usr/bin/open "$APP_URL"
-  exit 0
+if [[ -f "$PID_FILE" ]]; then
+  EXISTING_PID="$(tr -d '[:space:]' < "$PID_FILE")"
+  if [[ "$EXISTING_PID" == <-> ]] \
+    && kill -0 "$EXISTING_PID" 2>/dev/null \
+    && /usr/bin/curl --silent --fail --max-time 2 "$APP_URL/_stcore/health" >/dev/null 2>&1; then
+    /usr/bin/open "$APP_URL"
+    exit 0
+  fi
 fi
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
@@ -51,7 +57,7 @@ fi
 echo "앱 서버를 시작합니다…"
 : > "$LOG_FILE"
 nohup "$APP_VENV/bin/python" -m streamlit run app.py \
-  --server.headless=true --server.port=8501 \
+  --server.headless=true --server.port="$APP_PORT" \
   >"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PID_FILE"
